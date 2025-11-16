@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/rpc"
 	"os"
+	"sync"
 	"time"
 
 	"uk.ac.bris.cs/gameoflife/util"
@@ -59,9 +60,8 @@ func distributor(p Params, c distributorChannels, keypress <-chan rune) {
 
 	// have a list of the AWS nodes addresses
 	workerAddresses := []string{
-		//worker 1
-		//worker 2
-		//worker 3
+		"44.211.98.86:8030",
+		"3.236.245.14:8030",
 	}
 
 	numWorkers := len(workerAddresses)
@@ -95,6 +95,8 @@ func distributor(p Params, c distributorChannels, keypress <-chan rune) {
 	//Channel used to sognal the goroutine to stop
 	done := make(chan bool)
 
+	var worldMutex sync.RWMutex
+	var turnMu sync.RWMutex
 	turn := 0
 
 	go func() {
@@ -102,22 +104,26 @@ func distributor(p Params, c distributorChannels, keypress <-chan rune) {
 			select {
 			// Case runs every time the timer ticks (every 2 seconds)
 			case <-ticker.C:
+				worldMutex.RLock()
+
 				totalAlive := 0
-				for _, client := range clients {
-					var aliveCount int
 
-					err := client.Call("GOLWorker.GetAliveCount", struct{}{}, &aliveCount)
-
-					if err != nil {
-						fmt.Println("Error calling GetAliveCount:", err)
-						continue
+				for y := 0; y < p.ImageHeight; y++ {
+					for x := 0; x < p.ImageWidth; x++ {
+						if world[y][x] == 255 {
+							totalAlive++
+						}
 					}
-
-					totalAlive = totalAlive + aliveCount
 				}
 
+				worldMutex.RUnlock()
+
+				turnMu.RLock()
+				currentTurn := turn
+				turnMu.RUnlock()
+
 				c.events <- AliveCellsCount{
-					CompletedTurns: turn,
+					CompletedTurns: currentTurn,
 					CellsCount:     totalAlive,
 				}
 			case <-done:
@@ -155,15 +161,26 @@ func distributor(p Params, c distributorChannels, keypress <-chan rune) {
 			case 'p':
 				if !paused {
 					paused = true
-					fmt.Println("paused at turn:", turn)
-					c.events <- StateChange{turn, Paused}
+					turnMu.RLock()
+					currentTurn := turn
+					turnMu.RUnlock()
+					fmt.Println("paused at turn:", currentTurn)
+					c.events <- StateChange{currentTurn, Paused}
+
 				} else {
 					paused = false
+					turnMu.RLock()
+					currentTurn := turn
+					turnMu.RUnlock()
 					fmt.Println("continuing")
-					c.events <- StateChange{turn, Executing}
+					c.events <- StateChange{currentTurn, Executing}
 				}
 			case 's':
+				worldMutex.RLock()
+				turnMu.RLock()
 				saveImage(p, c, world, turn)
+				turnMu.RUnlock()
+				worldMutex.RUnlock()
 			case 'q':
 				quitting = true
 				fmt.Println("quitting, sending signal to worker")
@@ -175,8 +192,16 @@ func distributor(p Params, c distributorChannels, keypress <-chan rune) {
 				for _, client := range clients {
 					_ = client.Call("GOLWorker.Shutdown", struct{}{}, &struct{}{})
 				}
+
+				worldMutex.RLock()
 				saveImage(p, c, world, turn)
-				c.events <- StateChange{turn, Quitting}
+				worldMutex.RUnlock()
+
+				turnMu.RLock()
+				currentTurn := turn
+				turnMu.RUnlock()
+
+				c.events <- StateChange{currentTurn, Quitting}
 				close(c.events)
 				os.Exit(0)
 			}
@@ -184,8 +209,12 @@ func distributor(p Params, c distributorChannels, keypress <-chan rune) {
 		default:
 		}
 
+		turnMu.RLock()
+		doneTurns := turn
+		turnMu.RUnlock()
+
 		// quit if acc finished and not paused
-		if quitting || (turn >= p.Turns && !paused) {
+		if quitting || (doneTurns >= p.Turns && !paused) {
 			break
 		}
 
@@ -241,6 +270,9 @@ func distributor(p Params, c distributorChannels, keypress <-chan rune) {
 		// and then send CellsFlipped event
 		// make a slice so as to compare the old row and the new row of the world
 		flippedCells := make([]util.Cell, 0)
+
+		worldMutex.RLock()
+
 		// go row by row, then column by column
 		for y := 0; y < p.ImageHeight; y++ {
 			for x := 0; x < p.ImageWidth; x++ {
@@ -250,23 +282,33 @@ func distributor(p Params, c distributorChannels, keypress <-chan rune) {
 			}
 		}
 
+		worldMutex.RUnlock()
+
 		// if there is at least one cell thats been flipped then we need to return the
 		// Cells Flipped event
 		if len(flippedCells) > 0 {
+			turnMu.RLock()
+			currentTurn := turn + 1
+			turnMu.RUnlock()
 			c.events <- CellsFlipped{
-				CompletedTurns: turn + 1,
+				CompletedTurns: currentTurn,
 				Cells:          flippedCells}
 		}
 
+		worldMutex.Lock()
 		world = newWorld
+		worldMutex.Unlock()
 
 		///// STEP 6 TURN COMPLETE///////////
 		// At the end of each turn we need to signal that a turn is completed
-		c.events <- TurnComplete{
-			CompletedTurns: turn + 1,
-		}
+		turnMu.Lock()
+		turn++
+		currentTurn := turn
+		turnMu.Unlock()
 
-		turn++ //advance turn
+		c.events <- TurnComplete{
+			CompletedTurns: currentTurn,
+		}
 	}
 
 	//Stop ticker after finishing all turns
@@ -274,12 +316,22 @@ func distributor(p Params, c distributorChannels, keypress <-chan rune) {
 	ticker.Stop()
 
 	// TODO: Report the final state using FinalTurnCompleteEvent.
+	worldMutex.RLock()
 	aliveCells := AliveCells(world, p.ImageWidth, p.ImageHeight)
-	c.events <- FinalTurnComplete{CompletedTurns: turn, Alive: aliveCells}
+	worldMutex.RUnlock()
+
+	turnMu.RLock()
+	finalTurn := turn
+	turnMu.RUnlock()
+
+	c.events <- FinalTurnComplete{CompletedTurns: finalTurn, Alive: aliveCells}
 
 	//save final output
+	worldMutex.RLock()
 	saveImage(p, c, world, turn)
-	c.events <- StateChange{turn, Quitting}
+	worldMutex.RUnlock()
+
+	c.events <- StateChange{finalTurn, Quitting}
 
 	//Close the channels to stop the SDL goroutine gracefully. Removing may cause deadlock.
 	close(c.events)

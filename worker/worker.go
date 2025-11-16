@@ -5,12 +5,14 @@ import (
 	"net"
 	"net/rpc"
 	"os"
+	"sync"
 
 	"uk.ac.bris.cs/gameoflife/gol"
 	"uk.ac.bris.cs/gameoflife/util"
 )
 
 type GOLWorker struct {
+	mu     sync.RWMutex
 	world  [][]byte
 	params gol.Params
 }
@@ -107,8 +109,11 @@ func (e *GOLWorker) ProcessTurns(req WorkerRequest, res *WorkerResponse) error {
 
 	//this is just updating the internal state, so server can keep track of the worlds state after a turn
 	//otherwise worker would forget what world its simulating after each turn
+
+	e.mu.Lock()
 	e.world = sectionRows
 	e.params = p
+	e.mu.Unlock()
 
 	return nil
 }
@@ -235,20 +240,6 @@ func assignRows(height, threads int) []section {
 		start = end
 	}
 	return sections
-}
-
-// counting alive cells, doesn't acc need any parameters but cuz its gotta follow format hence _ struct{}
-func (e *GOLWorker) GetAliveCount(_ struct{}, res *int) error {
-	count := 0
-	for y := 0; y < len(e.world); y++ {
-		for x := 0; x < len(e.world[y]); x++ {
-			if e.world[y][x] == 255 {
-				count++
-			}
-		}
-	}
-	*res = count
-	return nil
 }
 
 // helper func to make worker shut down on keypress
