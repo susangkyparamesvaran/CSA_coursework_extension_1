@@ -147,10 +147,6 @@ func distributor(p Params, c distributorChannels, keypress <-chan rune) {
 	// needs to gather the results and then put them together for the newstate of world
 	// TODO: Execute all turns of the Game of Life.
 
-	//----------------------------------------------------------------------------------------------------------//
-	//----------------------------------------------------------------------------------------------------------//
-
-	// variables for step 5
 	paused := false
 	quitting := false
 
@@ -265,7 +261,6 @@ func distributor(p Params, c distributorChannels, keypress <-chan rune) {
 			}
 		}
 
-		///// STEP 6 CELLS FLIPPED///////////
 		// At the end of each turn, put all changed coordinates into a slice,
 		// and then send CellsFlipped event
 		// make a slice so as to compare the old row and the new row of the world
@@ -299,7 +294,6 @@ func distributor(p Params, c distributorChannels, keypress <-chan rune) {
 		world = newWorld
 		worldMutex.Unlock()
 
-		///// STEP 6 TURN COMPLETE///////////
 		// At the end of each turn we need to signal that a turn is completed
 		turnMu.Lock()
 		turn++
