@@ -61,7 +61,7 @@ func distributor(p Params, c distributorChannels, keypress <-chan rune) {
 	// have a list of the AWS nodes addresses
 	workerAddresses := []string{
 		"3.235.67.169:8030",
-		//"3.236.245.14:8030",
+		"3.83.185.159:8030",
 	}
 
 	numWorkers := len(workerAddresses)
